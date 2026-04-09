@@ -1,7 +1,7 @@
 const axios = require('axios');
 const Flight = require('../models/Flight');
 
-const AVIATION_KEY = 84dcd773d2b8efcef3175767449fe467;
+const AVIATION_KEY = AVIATION_KEY;
 
 exports.searchFlights = async (req, res) => {
   try {

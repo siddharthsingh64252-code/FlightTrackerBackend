@@ -37,3 +37,11 @@ cron.schedule('0 * * * *', async () => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Server running on port ${PORT} ✅`));
+
+app.get('/debug-env', (req, res) => {
+  res.json({
+    keyExists: !!process.env.RAPIDAPI_KEY,
+    keyLength: process.env.RAPIDAPI_KEY?.length,
+    keyPreview: process.env.RAPIDAPI_KEY?.slice(0, 6) + '...' // never expose full key
+  });
+});

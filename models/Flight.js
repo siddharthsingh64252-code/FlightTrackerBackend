@@ -10,7 +10,8 @@ const flightSchema = new mongoose.Schema({
   currency: { type: String, default: 'INR' },
   departureTime: { type: String },
   arrivalTime: { type: String },
-  duration: { type: String },
+  duration: { type: Number },      // fixed: was String, should be Number (minutes)
+  stops: { type: Number, default: 0 }, // fixed: was missing from schema
   lastUpdated: { type: Date, default: Date.now }
 });
 

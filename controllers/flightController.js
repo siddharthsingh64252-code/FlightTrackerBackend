@@ -1,7 +1,7 @@
 const axios = require('axios');
 const Flight = require('../models/Flight');
 
-const AVIATION_KEY = process.env.AVIATIONSTACK_API_KEY;
+const AVIATION_KEY = 84dcd773d2b8efcef3175767449fe467;
 
 exports.searchFlights = async (req, res) => {
   try {

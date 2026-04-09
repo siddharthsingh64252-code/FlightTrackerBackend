@@ -26,7 +26,7 @@ exports.searchFlights = async (req, res) => {
     // Fetch from AviationStack
     const response = await axios.get('http://api.aviationstack.com/v1/flights', {
       params: {
-        access_key: AVIATION_KEY,
+        access_key: AVIATIONSTACK_API_KEY,
         dep_iata: origin.toUpperCase(),
         arr_iata: destination.toUpperCase(),
         flight_date: date,

@@ -4,22 +4,59 @@ const Flight = require('../models/Flight');
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY;
 const RAPIDAPI_HOST = 'sky-scrapper.p.rapidapi.com';
 
-// Helper: get Sky Scrapper entityId from IATA code
-const getEntityId = async (iata) => {
-  const response = await axios.get(
-    'https://sky-scrapper.p.rapidapi.com/api/v1/flights/searchAirport',
-    {
-      params: { query: iata, locale: 'en-US' },
-      headers: {
-        'X-RapidAPI-Key': RAPIDAPI_KEY,
-        'X-RapidAPI-Host': RAPIDAPI_HOST,
-      },
-    }
-  );
+// Axios instance with timeout
+const apiClient = axios.create({
+  timeout: 15000, // 15 seconds timeout
+});
 
-  const places = response.data?.data;
-  if (!places || places.length === 0) throw new Error(`Airport not found: ${iata}`);
-  return places[0].entityId;
+// Helper: get Sky Scrapper entityId from IATA code with better error handling
+const getEntityId = async (iata) => {
+  try {
+    const response = await apiClient.get(
+      'https://sky-scrapper.p.rapidapi.com/api/v1/flights/searchAirport',
+      {
+        params: { query: iata, locale: 'en-US' },
+        headers: {
+          'X-RapidAPI-Key': RAPIDAPI_KEY,
+          'X-RapidAPI-Host': RAPIDAPI_HOST,
+        },
+      }
+    );
+
+    // Handle RapidAPI subscription error
+    if (response.data?.message) {
+      throw new Error(`RapidAPI error: ${response.data.message}`);
+    }
+
+    const places = response.data?.data;
+    if (!places || places.length === 0) {
+      throw new Error(`Airport not found for IATA code: ${iata}`);
+    }
+
+    // Find exact IATA match first, fallback to first result
+    const exactMatch = places.find(
+      (p) => p.iata?.toUpperCase() === iata.toUpperCase()
+    );
+    const best = exactMatch || places[0];
+
+    if (!best.entityId) {
+      throw new Error(`No entityId found for airport: ${iata}`);
+    }
+
+    return best.entityId;
+  } catch (err) {
+    // Catch RapidAPI HTTP errors
+    if (err.response?.status === 403 || err.response?.status === 401) {
+      throw new Error('Invalid or missing RapidAPI key. Check RAPIDAPI_KEY in environment.');
+    }
+    if (err.response?.status === 429) {
+      throw new Error('RapidAPI rate limit exceeded. Please try again later.');
+    }
+    if (err.response?.data?.message) {
+      throw new Error(`RapidAPI: ${err.response.data.message}`);
+    }
+    throw err;
+  }
 };
 
 exports.searchFlights = async (req, res) => {
@@ -27,7 +64,16 @@ exports.searchFlights = async (req, res) => {
     const { origin, destination, date } = req.query;
 
     if (!origin || !destination || !date) {
-      return res.status(400).json({ error: 'origin, destination and date required' });
+      return res.status(400).json({ error: 'origin, destination and date are required' });
+    }
+
+    // Validate date format YYYY-MM-DD
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ error: 'date must be in YYYY-MM-DD format' });
+    }
+
+    if (!RAPIDAPI_KEY) {
+      return res.status(500).json({ error: 'RAPIDAPI_KEY is not configured on the server' });
     }
 
     const originUpper = origin.toUpperCase();
@@ -47,64 +93,94 @@ exports.searchFlights = async (req, res) => {
     }
 
     // Get entityIds for origin and destination
-    const [originEntityId, destinationEntityId] = await Promise.all([
-      getEntityId(originUpper),
-      getEntityId(destinationUpper),
-    ]);
+    let originEntityId, destinationEntityId;
+    try {
+      [originEntityId, destinationEntityId] = await Promise.all([
+        getEntityId(originUpper),
+        getEntityId(destinationUpper),
+      ]);
+    } catch (err) {
+      return res.status(502).json({ error: err.message });
+    }
 
     // Split date into parts (expected format: YYYY-MM-DD)
     const [year, month, day] = date.split('-');
 
     // Fetch flights from Sky Scrapper
-    const response = await axios.get(
-      'https://sky-scrapper.p.rapidapi.com/api/v2/flights/searchFlights',
-      {
-        params: {
-          originSkyId: originUpper,
-          destinationSkyId: destinationUpper,
-          originEntityId,
-          destinationEntityId,
-          date,
-          year,
-          month,
-          day,
-          adults: '1',
-          currency: 'INR',
-          locale: 'en-US',
-          market: 'IN',
-          countryCode: 'IN',
-        },
-        headers: {
-          'X-RapidAPI-Key': RAPIDAPI_KEY,
-          'X-RapidAPI-Host': RAPIDAPI_HOST,
-        },
+    let response;
+    try {
+      response = await apiClient.get(
+        'https://sky-scrapper.p.rapidapi.com/api/v2/flights/searchFlights',
+        {
+          params: {
+            originSkyId: originUpper,
+            destinationSkyId: destinationUpper,
+            originEntityId,
+            destinationEntityId,
+            date,
+            year,
+            month,
+            day,
+            adults: '1',
+            currency: 'INR',
+            locale: 'en-US',
+            market: 'IN',
+            countryCode: 'IN',
+          },
+          headers: {
+            'X-RapidAPI-Key': RAPIDAPI_KEY,
+            'X-RapidAPI-Host': RAPIDAPI_HOST,
+          },
+        }
+      );
+    } catch (err) {
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        return res.status(502).json({
+          error: 'Not subscribed to Sky Scrapper API or invalid key. Visit https://rapidapi.com/apiheya/api/sky-scrapper to subscribe.',
+        });
       }
-    );
+      if (err.response?.status === 429) {
+        return res.status(429).json({ error: 'RapidAPI rate limit exceeded. Try again later.' });
+      }
+      if (err.code === 'ECONNABORTED') {
+        return res.status(504).json({ error: 'Request to Sky Scrapper API timed out.' });
+      }
+      return res.status(502).json({
+        error: err.response?.data?.message || 'Failed to fetch flights from Sky Scrapper',
+      });
+    }
+
+    // Handle RapidAPI message-level errors (they return 200 but with a message field)
+    if (response.data?.message) {
+      return res.status(502).json({ error: `Sky Scrapper API: ${response.data.message}` });
+    }
 
     const itineraries = response.data?.data?.itineraries || [];
 
     if (itineraries.length === 0) {
-      return res.json({ flights: [], cached: false });
+      return res.json({ flights: [], cached: false, message: 'No flights found for this route/date' });
     }
 
-    // Map response to your Flight schema
+    // Map response to Flight schema
     const flightDocs = itineraries.map((item) => {
       const leg = item.legs?.[0];
       const segment = leg?.segments?.[0];
+
+      const carrierCode = segment?.marketingCarrier?.alternateId || '';
+      const flightNum = segment?.flightNumber || '';
 
       return {
         origin: originUpper,
         destination: destinationUpper,
         date,
         airline: leg?.carriers?.marketing?.[0]?.name || 'Unknown',
-        flightNumber: segment?.flightNumber
-          ? `${segment.marketingCarrier?.alternateId}${segment.flightNumber}`
-          : 'N/A',
-        price: item.price?.raw || 0,
+        flightNumber: carrierCode && flightNum ? `${carrierCode}${flightNum}` : 'N/A',
+        price: item.price?.raw ?? null,
+        currency: 'INR',
         departureTime: leg?.departure || null,
         arrivalTime: leg?.arrival || null,
-        duration: leg?.durationInMinutes || null,
-        stops: leg?.stopCount || 0,
+        duration: leg?.durationInMinutes ?? null,  // fixed: Number
+        stops: leg?.stopCount ?? 0,                // fixed: now saved properly
         lastUpdated: new Date(),
       };
     });
@@ -122,7 +198,7 @@ exports.searchFlights = async (req, res) => {
     res.json({ flights: saved, cached: false });
 
   } catch (err) {
-    console.error('searchFlights error:', err?.response?.data || err.message);
-    res.status(500).json({ error: 'Failed to fetch flights' });
+    console.error('searchFlights unexpected error:', err?.response?.data || err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
 };
